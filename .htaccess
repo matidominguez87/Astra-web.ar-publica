@@ -1,0 +1,99 @@
+# Astra Partners: configuración para Apache / LiteSpeed (DirectAdmin).
+# Equivale a _headers (que este alojamiento ignora) y agrega redirecciones y bloqueos.
+# Dominio canónico: https://astrapartners.ar/ (sin www).
+
+# --- Básicos ---
+DirectoryIndex index.html
+# Sin listado de directorios (DirectAdmin permite Options=Indexes en .htaccess).
+Options -Indexes
+ErrorDocument 404 /404.html
+AddDefaultCharset utf-8
+
+<IfModule mod_mime.c>
+  AddCharset utf-8 .css .js .txt .xml .svg
+  AddType font/woff2 .woff2
+  AddType image/webp .webp
+  AddType image/svg+xml .svg
+</IfModule>
+
+# --- Archivos que no son parte de la web ---
+# Bloquea .git, .htaccess, .nojekyll y cualquier ruta que empiece con punto, salvo
+# /.well-known/ (necesario para emitir el certificado de Let's Encrypt).
+# También CNAME (solo de GitHub Pages) y README/LICENSE si aparecieran.
+<IfModule mod_alias.c>
+  RedirectMatch 404 "/\.(?!well-known(/|$))"
+  RedirectMatch 404 "(?i)^/(CNAME|README[^/]*|LICENSE[^/]*)$"
+</IfModule>
+# Respaldo si mod_alias no estuviera: archivos con punto inicial y CNAME (Apache 2.4).
+<IfModule mod_authz_core.c>
+  <FilesMatch "^(\.|CNAME$)">
+    Require all denied
+  </FilesMatch>
+</IfModule>
+
+# --- Redirecciones (un solo salto hacia https://astrapartners.ar) ---
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+
+  # El desafío de Let's Encrypt debe responder por HTTP y en cualquier host.
+  RewriteRule ^\.well-known/acme-challenge/ - [L]
+
+  # Mismo bloqueo que arriba, por si el servidor (p. ej. LiteSpeed) no aplica RedirectMatch.
+  RewriteRule (^|/)\.(?!well-known(/|$)) - [F,L]
+  RewriteRule ^(CNAME|README[^/]*|LICENSE[^/]*)$ - [F,L,NC]
+
+  # www -> dominio raíz, siempre en HTTPS.
+  RewriteCond %{HTTP_HOST} ^www\.astrapartners\.ar$ [NC]
+  RewriteRule ^ https://astrapartners.ar%{REQUEST_URI} [R=301,L,NE]
+
+  # HTTP -> HTTPS. Detrás del proxy de Cloudflare el origen puede recibir HTTP aunque el
+  # visitante use HTTPS: se respetan X-Forwarded-Proto y CF-Visitor para no generar un bucle.
+  # Solo para el dominio propio, así la URL temporal del hosting o la IP siguen funcionando.
+  RewriteCond %{HTTP_HOST} ^astrapartners\.ar$ [NC]
+  RewriteCond %{HTTPS} !=on
+  RewriteCond %{HTTP:X-Forwarded-Proto} !https [NC]
+  RewriteCond %{HTTP:CF-Visitor} !https [NC]
+  RewriteRule ^ https://astrapartners.ar%{REQUEST_URI} [R=301,L,NE]
+
+  # /index.html -> / (URL canónica). Solo cuando lo pide el visitante, no en la carga interna.
+  RewriteCond %{THE_REQUEST} \s/+index\.html[\s?] [NC]
+  RewriteRule ^index\.html$ / [R=301,L]
+</IfModule>
+
+# --- Encabezados de seguridad ---
+<IfModule mod_headers.c>
+  Header always set X-Content-Type-Options "nosniff"
+  Header always set Referrer-Policy "strict-origin-when-cross-origin"
+  Header always set X-Frame-Options "DENY"
+  Header always set Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+  Header always set Cross-Origin-Opener-Policy "same-origin"
+  # Misma CSP que el <meta> del HTML, más frame-ancestors (no se puede declarar en <meta>).
+  # Todo es propio: sin estilos ni scripts en línea; el JSON-LD no es script ejecutable.
+  Header always set Content-Security-Policy "default-src 'self'; img-src 'self'; font-src 'self'; style-src 'self'; script-src 'self'; base-uri 'self'; object-src 'none'; form-action 'none'; frame-ancestors 'none'"
+  # HSTS sin includeSubDomains ni preload: no afecta a otros subdominios (correo, etc.).
+  # Los navegadores lo ignoran si llega por HTTP.
+  Header always set Strict-Transport-Security "max-age=31536000"
+  Header unset X-Powered-By
+
+  # --- Caché ---
+  # HTML, robots y sitemap: siempre se revalidan, así cada publicación se ve enseguida.
+  <FilesMatch "\.(html|txt|xml)$">
+    Header set Cache-Control "no-cache"
+  </FilesMatch>
+  # CSS y JS sin hash en el nombre: caché corta.
+  <FilesMatch "\.(css|js)$">
+    Header set Cache-Control "public, max-age=86400"
+  </FilesMatch>
+  # Imágenes y fuente: cambian poco.
+  <FilesMatch "\.(jpe?g|png|webp|svg|woff2|ico)$">
+    Header set Cache-Control "public, max-age=2592000"
+  </FilesMatch>
+</IfModule>
+
+# --- Compresión (LiteSpeed comprime por su cuenta) ---
+<IfModule mod_deflate.c>
+  # En Apache 2.4 AddOutputFilterByType depende de mod_filter.
+  <IfModule mod_filter.c>
+    AddOutputFilterByType DEFLATE text/html text/css text/plain text/xml application/xml application/javascript text/javascript image/svg+xml
+  </IfModule>
+</IfModule>
